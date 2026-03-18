@@ -35,6 +35,43 @@ vim.api.nvim_create_autocmd("FileType", {
       end,
     })
 
+    -- After selecting a tool or editor_context item, wrap the name in braces.
+    -- The completefunc returns word without braces (e.g. "@tool_name") so that
+    -- Vim's native prefix filter works while typing; this restores the braces.
+    vim.api.nvim_create_autocmd("CompleteDone", {
+      buffer = bufnr,
+      callback = function()
+        local item = vim.v.completed_item
+        if type(item) ~= "table" then
+          return
+        end
+        local user_data = item.user_data
+        if type(user_data) ~= "table" or not user_data.needs_braces then
+          return
+        end
+
+        local word = item.word
+        if not word or #word < 2 then
+          return
+        end
+
+        local trigger = word:sub(1, 1)
+        local name = word:sub(2)
+        local with_braces = string.format("%s{%s}", trigger, name)
+
+        local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+        local line = vim.api.nvim_get_current_line()
+
+        -- Find the inserted word ending at the cursor and replace it
+        local before = line:sub(1, col)
+        local start_idx = before:find(vim.pesc(word) .. "$")
+        if start_idx then
+          vim.api.nvim_buf_set_text(0, row - 1, start_idx - 1, row - 1, col, { with_braces })
+          vim.api.nvim_win_set_cursor(0, { row, start_idx - 1 + #with_braces })
+        end
+      end,
+    })
+
     return true -- remove this autocmd after first run
   end,
 })
