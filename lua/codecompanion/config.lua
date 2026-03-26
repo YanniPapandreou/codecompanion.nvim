@@ -39,7 +39,10 @@ local defaults = {
       auggie_cli = "auggie_cli",
       cagent = "cagent",
       claude_code = "claude_code",
+      cline_cli = "cline_cli",
       codex = "codex",
+      cursor_cli = "cursor_cli",
+      copilot_acp = "copilot_acp",
       gemini_cli = "gemini_cli",
       goose = "goose",
       kimi_cli = "kimi_cli",
@@ -56,6 +59,14 @@ local defaults = {
   },
   constants = constants,
   interactions = {
+    opts = {
+      date_format = "%A, %d %B %Y", -- The date format to use in system prompts
+
+      watcher = {
+        enabled = true, -- Reload buffers when an agent modifies files on disk
+        debounce = 500, -- Debounce time in milliseconds
+      },
+    },
     -- BACKGROUND INTERACTION -------------------------------------------------
     background = {
       adapter = {
@@ -257,6 +268,7 @@ The user is working on a %s machine. Please respond with system specific command
           description = "The memory tool enables LLMs to store and retrieve information across conversations through a memory file directory",
           opts = {
             require_approval_before = true,
+            whitelist = {}, -- e.g. { { path = "/absolute/path", as = "/alias" } }
           },
         },
         ["read_file"] = {
@@ -293,6 +305,8 @@ The user is working on a %s machine. Please respond with system specific command
         opts = {
           auto_submit_errors = true, -- Send any errors to the LLM automatically?
           auto_submit_success = true, -- Send any successful output to the LLM automatically?
+          notify_on_approval = true, -- Notify the user when a tool requires approval?,
+
           folds = {
             enabled = true, -- Fold tool output in the buffer?
             failure_words = { -- Words that indicate an error in the tool output. Used to apply failure highlighting
@@ -358,11 +372,12 @@ If you are providing code changes, use the insert_edit_into_file tool (if availa
       },
       slash_commands = {
         ["buffer"] = {
-          path = "interactions.chat.slash_commands.builtin.buffer",
+          path = "interactions.shared.slash_commands.buffer",
           description = "Insert open buffers",
           opts = {
             contains_code = true,
             default_params = "diff", -- all|diff
+            interactions = { "chat", "cli" },
             provider = providers.pickers, -- telescope|fzf_lua|mini_pick|snacks|default
           },
         },
@@ -404,10 +419,11 @@ If you are providing code changes, use the insert_edit_into_file tool (if availa
           },
         },
         ["file"] = {
-          path = "interactions.chat.slash_commands.builtin.file",
+          path = "interactions.shared.slash_commands.file",
           description = "Insert a file",
           opts = {
             contains_code = true,
+            interactions = { "chat", "cli" },
             max_lines = 1000,
             provider = providers.pickers, -- telescope|fzf_lua|mini_pick|snacks|default
           },
@@ -466,6 +482,22 @@ If you are providing code changes, use the insert_edit_into_file tool (if availa
           description = "Insert the current date and time",
           opts = {
             contains_code = false,
+          },
+        },
+        ["resume"] = {
+          path = "interactions.chat.slash_commands.builtin.resume",
+          description = "Resume a previous ACP session",
+          ---@param opts { adapter: CodeCompanion.HTTPAdapter|CodeCompanion.ACPAdapter }
+          ---@return boolean
+          enabled = function(opts)
+            if opts.adapter and opts.adapter.type == "acp" then
+              return true
+            end
+            return false
+          end,
+          opts = {
+            contains_code = false,
+            max_sessions = 500,
           },
         },
         ["rules"] = {
@@ -640,23 +672,6 @@ If you are providing code changes, use the insert_edit_into_file tool (if availa
           callback = "keymaps.copilot_stats",
           description = "[Adapter] Copilot statistics",
         },
-        -- Keymaps for ACP permission requests
-        _acp_allow_always = {
-          modes = { n = "g1" },
-          description = "Allow Always",
-        },
-        _acp_allow_once = {
-          modes = { n = "g2" },
-          description = "Allow Once",
-        },
-        _acp_reject_once = {
-          modes = { n = "g3" },
-          description = "Reject Once",
-        },
-        _acp_reject_always = {
-          modes = { n = "g4" },
-          description = "Reject Always",
-        },
       },
       opts = {
         blank_prompt = "", -- The prompt to use when the user doesn't provide a prompt
@@ -752,7 +767,6 @@ The user is working on a %s machine. Please respond with system specific command
       agents = {},
       opts = {
         auto_insert = false, -- Enter insert mode when focusing the CLI terminal
-        reload = true, -- Reload buffers when an agent modifies files on disk
       },
       providers = {
         terminal = {
@@ -859,6 +873,11 @@ The user is working on a %s machine. Please respond with system specific command
         },
       },
       keymaps = {
+        view_diff = {
+          description = "View the proposed diff",
+          modes = { n = "gv" },
+          opts = { nowait = true },
+        },
         always_accept = {
           callback = "keymaps.always_accept",
           description = "Always accept changes in this buffer",
@@ -879,6 +898,11 @@ The user is working on a %s machine. Please respond with system specific command
           index = 3,
           modes = { n = "g3" },
           opts = { nowait = true, noremap = true },
+        },
+        cancel = {
+          description = "Cancel all pending tool calls",
+          modes = { n = "g4" },
+          opts = { nowait = true },
         },
         next_hunk = {
           callback = "keymaps.next_hunk",
@@ -1097,6 +1121,8 @@ The user is working on a %s machine. Please respond with system specific command
 
     diff = {
       enabled = true,
+      threshold_for_chat = 6, -- At or below this, always display the diff in the chat buffer
+
       -- Options for any diff windows (extends from floating_window)
       window = {
         opts = {},
@@ -1122,7 +1148,7 @@ The user is working on a %s machine. Please respond with system specific command
       window = {
         border = "single",
         width = { min = 40, max = 60 },
-        height = { min = 1, max = 2 },
+        height = { min = 3, max = 5 },
         relative = "cursor",
         title_pos = "left",
         row = 1,
@@ -1150,6 +1176,20 @@ The user is working on a %s machine. Please respond with system specific command
         close = {
           modes = { n = { "q", "<Esc>" } },
           description = "Close",
+        },
+        history_up = {
+          modes = {
+            i = "<Up>",
+            n = "<Up>",
+          },
+          description = "Previous prompt",
+        },
+        history_down = {
+          modes = {
+            i = "<Down>",
+            n = "<Down>",
+          },
+          description = "Next prompt",
         },
       },
     },

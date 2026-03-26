@@ -74,6 +74,12 @@ return {
     },
   },
   interactions = {
+    opts = {
+      watcher = {
+        enabled = true,
+        debounce = 500,
+      },
+    },
     background = {},
     chat = {
       adapter = "test_adapter",
@@ -371,6 +377,7 @@ return {
       },
     },
     shared = {
+      keymaps = og_config.interactions.shared.keymaps,
       editor_context = {
         ["buffer"] = {
           path = "interactions.shared.editor_context.buffer",

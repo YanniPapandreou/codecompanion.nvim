@@ -17,7 +17,7 @@ function source:get_trigger_characters()
 end
 
 function source:get_keyword_pattern()
-  return [[/\w\+]]
+  return [[/\%(\w\|-\)\+]]
 end
 
 function source:complete(params, callback)
@@ -46,7 +46,7 @@ function source:execute(item, callback)
   vim.api.nvim_set_current_line("")
   local chat = require("codecompanion").buf_get_chat(item.context.bufnr)
 
-  completion.slash_commands_execute(item, chat)
+  require("codecompanion.interactions.chat.slash_commands").run(item, chat)
 
   callback(item)
   vim.bo[item.context.bufnr].buflisted = false

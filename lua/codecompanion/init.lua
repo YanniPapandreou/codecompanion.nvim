@@ -320,9 +320,9 @@ CodeCompanion.cli = function(prompt_or_opts, opts)
   end
   opts = opts or {}
 
-  -- Prompt input mode: open the input buffer
+  -- Prompt input mode: toggle the input buffer
   if opts.prompt then
-    return require("codecompanion.interactions.cli.input").open({
+    return require("codecompanion.interactions.cli.input").toggle({
       agent = opts.agent,
       args = opts.args,
       initial_content = prompt,
@@ -490,7 +490,8 @@ CodeCompanion.setup = function(opts)
     api.nvim_create_user_command(cmd.cmd, cmd.callback, cmd.opts)
   end
 
-  -- Set up completion
+  -- Load the main completion module first to register its autocmds
+  require("codecompanion.providers.completion")
   local completion = config.interactions.chat.opts.completion_provider
   local ok, completion_module = pcall(require, "codecompanion.providers.completion." .. completion .. ".setup")
   if not ok then

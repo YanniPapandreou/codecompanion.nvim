@@ -1,4 +1,4 @@
-*codecompanion.txt*          For NVIM v0.11         Last change: 2026 March 17
+*codecompanion.txt*          For NVIM v0.11         Last change: 2026 March 26
 
 ==============================================================================
 Table of Contents                            *codecompanion-table-of-contents*
@@ -79,7 +79,7 @@ FEATURES                                      *codecompanion-welcome-features*
 -  Copilot Chat <https://github.com/features/copilot> meets Zed AI <https://zed.dev/blog/zed-ai>, in Neovim
 -  Integrates Neovim with LLMs and Agents in the CLI
 -  Support for LLMs from Anthropic, Copilot, GitHub Models, DeepSeek, Gemini, Mistral AI, Novita, Ollama, OpenAI, Azure OpenAI, HuggingFace and xAI out of the box (or bring your own!)
--  Support for Agent Client Protocol <https://agentclientprotocol.com/overview/introduction>, enabling coding with agents like Augment Code <https://docs.augmentcode.com/cli/overview>, Cagent <https://github.com/docker/cagent> from Docker, Claude Code <https://docs.anthropic.com/en/docs/claude-code/overview>, Codex <https://openai.com/codex>, Gemini CLI <https://github.com/google-gemini/gemini-cli>, Goose <https://block.github.io/goose/>, Kimi CLI <https://github.com/MoonshotAI/kimi-cli>, Kiro <https://kiro.dev/cli/>, Mistral Vibe <https://github.com/mistralai/mistral-vibe> and OpenCode <https://opencode.ai>
+-  Support for Agent Client Protocol <https://agentclientprotocol.com/overview/introduction>, enabling coding with agents like Augment Code <https://docs.augmentcode.com/cli/overview>, Cagent <https://github.com/docker/cagent> from Docker, Claude Code <https://docs.anthropic.com/en/docs/claude-code/overview>, Codex <https://openai.com/codex>, Copilot CLI <https://github.com/features/copilot/cli>, Gemini CLI <https://github.com/google-gemini/gemini-cli>, Goose <https://block.github.io/goose/>, Cursor CLI <https://cursor.com/docs/cli/overview>, Kimi CLI <https://github.com/MoonshotAI/kimi-cli>, Kiro <https://kiro.dev/cli/>, Mistral Vibe <https://github.com/mistralai/mistral-vibe> and OpenCode <https://opencode.ai>
 -  User contributed and supported |codecompanion-configuration-adapters-http-community-adapters|
 -  Support for |codecompanion-model-context-protocol|
 -  |codecompanion-usage-inline.html|, code creation and refactoring
@@ -769,11 +769,11 @@ CodeCompanion provides comprehensive support for the ACP specification:
                                                            preview for
                                                            tool approval
 
-  Session Management             ❔️                        Create, load,
-                                                           and persist
+  Session Management             ✅                        Create, list,
+                                                           load, and
+                                                           restore
                                                            sessions with
-                                                           state tracking.
-                                                           No restore
+                                                           state tracking
 
   Session Modes                  ✅                        Mode switching
 
@@ -844,6 +844,15 @@ SLASH COMMANDS ~
 ACP agents can advertise their own slash commands dynamically. You can access
 them with `\command` in the chat buffer. CodeCompanion transforms this to
 `/command` before sending your prompt to the agent.
+
+
+SESSION RESUME ~
+
+If an agent supports the `session/list` capability, you can resume a previous
+session using the `/resume` slash command in a fresh chat buffer. This calls
+`session/list` to discover previous sessions, then `session/load` to restore
+the selected session’s conversation history into the chat buffer. See
+|codecompanion-usage-chat-buffer-slash-commands-resume| for usage details.
 
 
 MODEL SELECTION ~
@@ -1031,6 +1040,17 @@ the default model for the Claude Code adapter:
 Using a `function` is useful for working around the limitations
 <https://github.com/zed-industries/claude-code-acp/issues/225> in the Claude
 Code SDK (which enables ACP support).
+
+
+DEFAULT MODE ~
+
+You can configure an ACP adapter to start in a specific agent mode (e.g., plan
+mode) by setting the `defaults.mode` option. This is useful if you want to
+always start sessions in plan mode or another specific mode.
+
+
+The mode is applied automatically after the session is established. Available
+mode IDs can be viewed using the `/mode` slash command in the chat buffer.
 
 
 ADAPTER SETTINGS ~
@@ -1272,6 +1292,24 @@ plugin configuration:
       },
     })
 <
+
+
+SETUP: COPILOT CLI ~
+
+Install Copilot CLI
+<https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli>
+as per the instructions and then in the terminal run `copilot` and ensure that
+you’re authenticated.
+
+
+SETUP: CURSOR CLI ~
+
+To use Cursor <https://www.cursor.com/> within CodeCompanion, you’ll need to
+take the following steps:
+
+1. Install `agent` as per the Cursor CLI documentation <https://cursor.com/docs/cli/overview>
+2. Authenticate by running `agent login` in your terminal
+3. Select the `cursor_cli` adapter in your chat buffer
 
 
 SETUP: GEMINI CLI ~
@@ -1942,7 +1980,13 @@ plugin. If you utilize the `insert_edit_into_file` tool or use an ACP adapter,
 then the plugin will update files and buffers, displaying the changes in a
 floating window.
 
-There are a number of configuration option available to you:
+For small changes, the diff is shown directly in the chat buffer. This can be
+controlled by `threshold_for_chat`, which corresponds to the size of the diff
+in terms of changed lines. For larger changes, the diff will automatically open
+in a floating window when the chat buffer is active. Or, you will be prompted
+to view the diff manually (`gv` by default).
+
+There are a number of configuration options available to you:
 
 
 
@@ -3357,6 +3401,19 @@ The plugin comes with the following system prompt:
     The user is working on a ${os} machine. Please respond with system specific commands if applicable.
 <
 
+The format of the date can be changed in your config by altering the
+`date_format` option:
+
+>lua
+    require("codecompanion").setup({
+      interactions = {
+        opts = {
+          date_format = "%A, %d %B %Y", -- Example: "Monday, 01 January 2024"
+        },
+      },
+    })
+<
+
 
 TOOL SYSTEM PROMPT ~
 
@@ -4269,7 +4326,7 @@ MEMORY
 
 
   [!IMPORTANT] For security, all memory operations are restricted to the
-  `/memories` directory
+  `/memories` directory and any whitelisted paths
 The memory tool enables LLMs to store and retrieve information across
 conversations through a memory file directory (`/memories`).
 
@@ -4292,6 +4349,48 @@ To use the tool:
 >md
     Use @{memory} to carry on our conversation about streamlining my dotfiles
 <
+
+
+WHITELISTED PATHS
+
+By default, the memory tool can only access files in `<cwd>/memories/`. You can
+whitelist additional paths so the LLM can read and write to them. Each entry
+maps a path on disk to a virtual prefix that the LLM uses:
+
+>lua
+    require("codecompanion").setup({
+      interactions = {
+        chat = {
+          tools = {
+            ["memory"] = {
+              opts = {
+                whitelist = {
+                  { path = "~/.dotfiles", as = "/dotfiles" },
+                  { path = "/shared/notes", as = "/notes" },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+<
+
+With this configuration, the LLM can use `/dotfiles/.zshrc` or `/notes/todo.md`
+as paths in memory tool calls, just as it uses `/memories/file.txt`. Tilde
+(`~`) is expanded automatically. Directory traversal protection applies to all
+whitelisted paths.
+
+You can also mount a single file. This is useful for a personal profile that
+the LLM can learn from and update over time:
+
+>lua
+    whitelist = {
+      { path = "~/.dotfiles/PERSONAL.md", as = "/personal" },
+    },
+<
+
+The LLM can then view and edit it via `/personal`.
 
 
 READ_FILE
@@ -4789,6 +4888,10 @@ in Neovim to the chat buffer. The command has native, `Telescope`, `mini.pick`,
 `fzf.lua` and `snacks.nvim` providers available. Also, multiple buffers can be
 selected and added to the chat buffer as per the video above.
 
+This slash command is also available in the
+|codecompanion-usage-cli-slash-commands|, where it inserts `@path` references
+instead of buffer contents.
+
 
 /COMMAND ~
 
@@ -4830,7 +4933,11 @@ URL.
 The `file` slash command allows you to add the contents of a file in the
 current working directory to the chat buffer. The command has native,
 `Telescope`, `mini.pick`, `fzf.lua` and `snacks.nvim` providers available.
-Also, multiple files can be selected and added to the chat buffer:
+Also, multiple files can be selected and added to the chat buffer.
+
+This slash command is also available in the
+|codecompanion-usage-cli-slash-commands|, where it inserts `@path` references
+instead of file contents.
 
 - Select a single file: `⏎ enter`
 - Select multiple files: `⇥ tab`
@@ -4884,6 +4991,18 @@ between different agent operating modes, as per the protocol
 The `now` slash command simply inserts the current datetime stamp into the chat
 buffer.
 
+
+/RESUME ~
+
+The `resume` slash command is specific to
+|codecompanion-configuration-adapters-acp| adapters that support the
+`session/list` capability. It allows you to resume a previous session by
+listing your past sessions and restoring the selected one into the chat buffer.
+The conversation history is rendered so you can continue where you left off.
+
+
+  [!NOTE] The `/resume` command must be used before sending any messages. It is
+  only available on a fresh chat buffer.
 
 /SYMBOLS ~
 
@@ -5097,6 +5216,9 @@ and with a visual selection, will resolve to be:
 <
 
 
+  [!NOTE] `@path` references are understood natively by CLI agents like Claude
+  Code and Codex, allowing them to read files directly.
+
 PROMPTS
 
 There will come a time when you need to send a more complex prompt to the
@@ -5113,10 +5235,37 @@ or:
     require("codecompanion").cli({ prompt = true })
 <
 
-This will open up a `codecompanion_input` buffer. This gives you access to all
-of the available editor context and a much a larger character window. To send
+This will toggle a `codecompanion_input` buffer. In this buffer, you have
+access to all of the available |codecompanion--editor-context|, some
+|codecompanion--slash-commands| and a much a larger character window. To send
 the prompt to the agent, you can write the buffer with `:w`. Or, to
 automatically send and submit, you can forcefully write with `:w!`.
+
+You can scroll previous prompts with the `<up>` and `<down>` keys.
+
+
+SLASH COMMANDS
+
+The prompt input buffer also supports the
+|codecompanion-usage-chat-buffer-slash-commands-buffer%5d| and
+|codecompanion-usage-chat-buffer-slash-commands-file| slash commands, which
+better enable you to share lots of context with a CLI agent at once. Simply
+type `/` in the buffer to bring up the completion menu for your selected
+provider.
+
+Instead of sharing file contents, CLI slash commands insert `@path` references
+into the prompt. For example, selecting a file via `/file` will insert:
+
+>markdown
+    @./lua/codecompanion/init.lua
+<
+
+If you select multiple files, each one is added on its own line:
+
+>markdown
+    @./lua/codecompanion/init.lua
+    @./lua/codecompanion/config.lua
+<
 
 
 AUTO-SUBMIT
@@ -5239,6 +5388,7 @@ The events that are fired from within the plugin are:
 - `CodeCompanionToolsFinished` - Fired when the tool system has finished running all tools
 - `CodeCompanionToolAdded` - Fired when a tool has been added to a chat
 - `CodeCompanionToolApprovalRequested` - Fired when a tool is requesting approval to run
+- `CodeCompanionToolApprovalFinished` - Fired when a user has actioned an approval request
 - `CodeCompanionToolStarted` - Fired when a tool has started executing
 - `CodeCompanionToolFinished` - Fired when a tool has finished executing
 - `CodeCompanionInlineStarted` - Fired at the start of the Inline interaction
@@ -5450,7 +5600,6 @@ HIGHLIGHT GROUPS
 The plugin sets the following highlight groups during setup:
 
 - `CodeCompanionChatInfo` - Information messages in the chat buffer
-- `CodeCompanionChatInfoBanner` - Banner showing useful information in the chat buffer
 - `CodeCompanionChatError` - Error messages in the chat buffer
 - `CodeCompanionChatWarn` - Warning messages in the chat buffer
 - `CodeCompanionChatSubtext` - Messages that appear under the information, error or warning messages in the chat buffer
@@ -5460,6 +5609,7 @@ The plugin sets the following highlight groups during setup:
 - `CodeCompanionChatTokens` - Virtual text in the chat buffer showing the token count
 - `CodeCompanionChatTool` - Tools in the chat buffer
 - `CodeCompanionChatToolGroups` - Tool groups in the chat buffer
+- `CodeCompanionChatToolText` - Tool output text in the chat buffer (overrides markdown rendering)
 - `CodeCompanionChatEditorContext` - Editor context in the chat buffer
 - `CodeCompanionVirtualText` - All other virtual text in the plugin
 
@@ -7356,6 +7506,8 @@ You should see: `5000`, in the chat buffer.
 
 
 ADDING IN USER APPROVALS
+
+
 
 A big concern for users when they create and deploy their own tools is `“what
 if an LLM does something I’m not aware of or I don’t approve?”`. To that

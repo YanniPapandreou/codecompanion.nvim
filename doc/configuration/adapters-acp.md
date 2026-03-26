@@ -79,6 +79,52 @@ require("codecompanion").setup({
 
 Using a _function_ is useful for working around the [limitations](https://github.com/zed-industries/claude-code-acp/issues/225) in the Claude Code SDK (which enables ACP support).
 
+## Configuring Default Mode
+
+You can configure an ACP adapter to start in a specific agent mode (e.g., plan mode) by setting the `defaults.mode` option. This is useful if you want to always start sessions in plan mode or another specific mode.
+
+::: code-group
+
+```lua [Adapters: Text] {6-8}
+require("codecompanion").setup({
+  adapters = {
+    acp = {
+      claude_code = function()
+        return require("codecompanion.adapters").extend("claude_code", {
+          defaults = {
+            mode = "plan"
+          },
+        })
+      end,
+    }
+  },
+}),
+```
+
+```lua [Adapters: Function] {6-12}
+require("codecompanion").setup({
+  adapters = {
+    acp = {
+      claude_code = function()
+        return require("codecompanion.adapters").extend("claude_code", {
+          defaults = {
+            ---@param self CodeCompanion.ACPAdapter
+            ---@return string
+            mode = function(self)
+              return "plan"
+            end,
+          },
+        })
+      end,
+    }
+  },
+}),
+```
+
+:::
+
+The mode is applied automatically after the session is established. Available mode IDs can be viewed using the `/mode` slash command in the chat buffer.
+
 ## Configuring Adapter Settings
 
 To change any of the default settings for an ACP adapter, you can extend it in your CodeCompanion setup. For example, to change the timeout and authentication method for the Gemini CLI adapter, you can do the following:
@@ -262,6 +308,15 @@ require("codecompanion").setup({
 })
 ```
 
+## Setup: Cline CLI
+
+To use [Cline CLI](https://cline.bot/cli) within CodeCompanion, you'll need to take the following steps:
+
+1. [Install](https://docs.cline.bot/getting-started/installing-cline#cli) Cline CLI.
+2. Authenticate by running `cline auth`.
+3. Select the `cline_cli` adapter in your chat buffer
+
+
 ## Setup: Codex
 
 To use OpenAI's [Codex](https://openai.com/codex/), install an ACP-compatible adapter like [this](https://github.com/zed-industries/codex-acp) one from [Zed](https://zed.dev).
@@ -286,6 +341,18 @@ require("codecompanion").setup({
   },
 })
 ```
+
+## Setup: Copilot CLI
+
+Install [Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) as per the instructions and then in the terminal run `copilot` and ensure that you're authenticated.
+
+## Setup: Cursor CLI
+
+To use [Cursor](https://www.cursor.com/) within CodeCompanion, you'll need to take the following steps:
+
+1. Install `agent` as per the [Cursor CLI documentation](https://cursor.com/docs/cli/overview)
+2. Authenticate by running `agent login` in your terminal
+3. Select the `cursor_cli` adapter in your chat buffer
 
 ## Setup: Gemini CLI
 

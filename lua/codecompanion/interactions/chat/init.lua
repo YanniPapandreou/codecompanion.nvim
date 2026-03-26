@@ -62,7 +62,6 @@
 ---@field window_opts? table Window configuration options for the chat buffer
 
 local adapters = require("codecompanion.adapters")
-local completion = require("codecompanion.providers.completion")
 local config = require("codecompanion.config")
 local helpers = require("codecompanion.interactions.chat.helpers")
 local parser = require("codecompanion.interactions.chat.parser")
@@ -219,58 +218,11 @@ local function find_tool_call(id, messages)
   return nil
 end
 
----Increment the cycle count in the chat buffer
----@param chat CodeCompanion.Chat
----@return nil
-local function increment_cycle(chat)
-  chat.cycle = chat.cycle + 1
-end
-
 ---Make an id from a string or table
 ---@param val string|table
 ---@return number
 local function make_id(val)
   return hash.hash(val)
-end
-
----Set the editable text area. This allows us to scope the Tree-sitter queries to a specific area
----@param chat CodeCompanion.Chat
----@param modifier? number
----@return nil
-local function set_text_editing_area(chat, modifier)
-  modifier = modifier or 0
-  chat.header_line = api.nvim_buf_line_count(chat.bufnr) + modifier
-end
-
----Ready the chat buffer for the next round of conversation
----@param chat CodeCompanion.Chat
----@param opts? table
----@return nil
-local function ready_chat_buffer(chat, opts)
-  opts = opts or {}
-
-  if not opts.auto_submit and chat._last_role ~= config.constants.USER_ROLE then
-    increment_cycle(chat)
-    chat:add_buf_message({ role = config.constants.USER_ROLE, content = "" })
-
-    set_text_editing_area(chat, -2)
-    chat.ui:display_tokens(chat.chat_parser, chat.header_line)
-    chat.context:render()
-
-    chat:dispatch("on_ready")
-  end
-
-  chat:update_metadata()
-
-  -- If we're automatically responding to a tool output, we need to leave some
-  -- space for the LLM's response so we can then display the user prompt again
-  if opts.auto_submit then
-    chat.ui:add_line_break()
-    chat.ui:add_line_break()
-  end
-
-  log:info("Chat request finished")
-  chat:reset()
 end
 
 ---Used to record the last chat buffer that was opened
@@ -303,7 +255,7 @@ local function set_autocmds(chat)
         local row, col = unpack(api.nvim_win_get_cursor(0))
         api.nvim_buf_set_text(bufnr, row - 1, col - #item.word, row - 1, col, { "" })
 
-        completion.slash_commands_execute(item.user_data, chat)
+        require("codecompanion.interactions.chat.slash_commands").run(item.user_data, chat)
       end
     end,
   })
@@ -470,14 +422,14 @@ function Chat.new(args)
   -- NOTE: Put the parser on the chat buffer for performance reasons
   local ok, chat_parser, yaml_parser
   ok, chat_parser = pcall(vim.treesitter.get_parser, self.bufnr, "markdown")
-  if not ok then
+  if not ok or not chat_parser then
     return log:error("[chat::init::new] Could not find the Markdown Tree-sitter parser")
   end
   self.chat_parser = chat_parser
 
   if show_settings then
     ok, yaml_parser = pcall(vim.treesitter.get_parser, self.bufnr, "yaml", { ignore_injections = false })
-    if not ok then
+    if not ok or not yaml_parser then
       return log:error("Could not find the Yaml Tree-sitter parser")
     end
     self.yaml_parser = yaml_parser
@@ -778,9 +730,14 @@ function Chat:change_adapter(adapter)
   self.ui.adapter = self.adapter
 
   if self.adapter.type == "acp" then
-    -- We need to ensure the connection is created before proceeding so that
-    -- users are given a choice of models to select from
+    -- Ensure the ACP connection and session are created so users can select a model
     helpers.create_acp_connection(self)
+    if self.acp_connection then
+      self.acp_connection:ensure_session()
+
+      local acp_commands = require("codecompanion.interactions.chat.acp.commands")
+      acp_commands.link_buffer_to_session(self.bufnr, self.acp_connection.session_id)
+    end
 
     helpers.remove_mcp_tools(self)
   end
@@ -888,7 +845,7 @@ function Chat:make_system_prompt_context()
   local winid = vim.fn.bufwinid(bufnr)
   local static_ctx = { ---@type CodeCompanion.SystemPrompt.Context|{}
     cwd = winid ~= -1 and vim.fn.getcwd(winid) or vim.fn.getcwd(),
-    date = tostring(os.date("%Y-%m-%d")),
+    date = tostring(os.date(config.interactions.opts.date_format)),
     default_system_prompt = CONSTANTS.SYSTEM_PROMPT,
     language = config.opts.language or "English",
     nvim_version = vim.version().major .. "." .. vim.version().minor .. "." .. vim.version().patch,
@@ -1251,7 +1208,7 @@ function Chat:submit(opts)
       vim.cmd("stopinsert")
     end
     self.ui:lock_buf()
-    set_text_editing_area(self, 2) -- this accounts for the LLM header
+    self.header_line = api.nvim_buf_line_count(self.bufnr) + 2 -- this accounts for the LLM header
   end
 
   local payload = {
@@ -1279,7 +1236,7 @@ end
 ---@return nil
 function Chat:tools_done(opts)
   opts = opts or {}
-  return ready_chat_buffer(self, opts)
+  return self:ready_for_input(opts)
 end
 
 ---Label messages that have been sent to the LLM, by the user. For adapters that
@@ -1364,7 +1321,7 @@ function Chat:done(output, reasoning, tools, meta, opts)
     end
   end
 
-  ready_chat_buffer(self)
+  self:ready_for_input()
 
   self:dispatch("on_completed", { status = self.status })
   utils.fire("ChatDone", { bufnr = self.bufnr, id = self.id })
@@ -1406,6 +1363,9 @@ function Chat:check_images(message)
 
       -- Replace the image link in the message with "image"
       local to_remove = fmt("[Image](%s)", image.path)
+      message.content = vim.trim(message.content:gsub(vim.pesc(to_remove), "image"))
+
+      to_remove = fmt("![%s](%s)", image.text or "", image.path)
       message.content = vim.trim(message.content:gsub(vim.pesc(to_remove), "image"))
     end
   end
@@ -1691,6 +1651,36 @@ function Chat:add_tool_output(tool, for_llm, for_user)
   }, {
     type = self.MESSAGE_TYPES.TOOL_MESSAGE,
   })
+end
+
+---Ready the chat buffer for the next round of conversation
+---@param opts? { auto_submit?: boolean }
+---@return nil
+function Chat:ready_for_input(opts)
+  opts = opts or {}
+
+  if not opts.auto_submit and self._last_role ~= config.constants.USER_ROLE then
+    self.cycle = self.cycle + 1
+    self:add_buf_message({ role = config.constants.USER_ROLE, content = "" })
+
+    self.header_line = api.nvim_buf_line_count(self.bufnr) - 2
+    self.ui:display_tokens(self.chat_parser, self.header_line)
+    self.context:render()
+
+    self:dispatch("on_ready")
+  end
+
+  self:update_metadata()
+
+  -- If we're automatically responding to a tool output, we need to leave some
+  -- space for the LLM's response so we can then display the user prompt again
+  if opts.auto_submit then
+    self.ui:add_line_break()
+    self.ui:add_line_break()
+  end
+
+  log:info("Chat request finished")
+  self:reset()
 end
 
 ---When a request has finished, reset the chat buffer

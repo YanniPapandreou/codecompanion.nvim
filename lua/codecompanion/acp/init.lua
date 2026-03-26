@@ -24,6 +24,7 @@ local adapter_utils = require("codecompanion.utils.adapters")
 local config = require("codecompanion.config")
 local jsonrpc = require("codecompanion.utils.jsonrpc")
 local log = require("codecompanion.utils.log")
+local utils = require("codecompanion.utils")
 
 local TIMEOUTS = {
   DEFAULT = 2e4, -- 20 seconds
@@ -47,6 +48,8 @@ local uv = vim.uv
 ---@field _authenticated boolean
 ---@field _active_prompt CodeCompanion.ACP.PromptBuilder|nil
 ---@field _state {handle: table, id_gen: CodeCompanion.JsonRPC.IdGenerator, line_buffer: CodeCompanion.JsonRPC.LineBuffer}
+---@field _loading_session boolean|nil
+---@field _on_session_update function|nil
 ---@field _modes {currentModeId: string, availableModes: table[]}|nil
 ---@field _models {currentModelId: string, availableModels: table[]}|nil
 ---@field methods table
@@ -94,16 +97,22 @@ function Connection.new(args)
   return self
 end
 
----Check if the connection is ready
+---Check if the connection has a session ready for prompting
 ---@return boolean
 function Connection:is_connected()
   return self._state.handle and self._initialized and self._authenticated and self.session_id ~= nil
 end
 
----Connect and initialize the ACP process and establish session
----@return CodeCompanion.ACP.Connection|nil self for chaining, nil on error
-function Connection:connect_and_initialize()
-  if self:is_connected() then
+---Check if the connection is authenticated
+---@return boolean
+function Connection:is_ready()
+  return self._state.handle ~= nil and self._initialized and self._authenticated
+end
+
+---Connect, initialize and authenticate the ACP process
+---@return CodeCompanion.ACP.Connection|nil
+function Connection:connect_and_authenticate()
+  if self:is_ready() then
     return self
   end
 
@@ -114,17 +123,17 @@ function Connection:connect_and_initialize()
   if not self._initialized then
     local initialized = self:send_rpc_request(METHODS.INITIALIZE, self.adapter_modified.parameters)
     if not initialized then
-      return log:error("[acp::connect_and_initialize] Failed to initialize")
+      return log:error("[acp::connect_and_authenticate] Failed to initialize")
     end
     self._agent_info = initialized
 
-    log:debug("[acp::connect_and_initialize] Agent info: %s", initialized)
+    log:debug("[acp::connect_and_authenticate] Agent info: %s", initialized)
 
     if
       initialized.protocolVersion and initialized.protocolVersion ~= self.adapter_modified.parameters.protocolVersion
     then
       log:warn(
-        "[acp::connect_and_initialize] Agent selected protocolVersion=%s (client sent=%s)",
+        "[acp::connect_and_authenticate] Agent selected protocolVersion=%s (client sent=%s)",
         initialized.protocolVersion,
         self.adapter_modified.parameters.protocolVersion
       )
@@ -146,11 +155,31 @@ function Connection:connect_and_initialize()
     return nil
   end
 
+  return self
+end
+
+---Connect and initialize the ACP process and establish the session
+---@return CodeCompanion.ACP.Connection|nil
+function Connection:connect_and_initialize()
+  if self:is_connected() then
+    return self
+  end
+
+  if not self:connect_and_authenticate() then
+    return nil
+  end
+
+  utils.fire("ACPSessionPre", {
+    adapter_modified = self.adapter_modified,
+    agent_capabilities = self._agent_info and self._agent_info.agentCapabilities,
+  })
+
   if not self:_establish_session() then
     return nil
   end
 
   self:apply_default_model()
+  self:apply_default_mode()
 
   return self
 end
@@ -199,6 +228,120 @@ function Connection:_authenticate()
     end
     self._authenticated = true
   end
+
+  return true
+end
+
+---Ensure a session exists or create one if needed
+---@return boolean success
+function Connection:ensure_session()
+  if self.session_id then
+    return true
+  end
+
+  if not self:is_ready() then
+    return false
+  end
+
+  utils.fire("ACPSessionPre", {
+    adapter_modified = self.adapter_modified,
+    agent_capabilities = self._agent_info and self._agent_info.agentCapabilities,
+  })
+
+  if not self:_establish_session() then
+    return false
+  end
+
+  self:apply_default_model()
+  self:apply_default_mode()
+
+  return true
+end
+
+---Check if the agent supports session/list
+---@return boolean
+function Connection:can_list_sessions()
+  return self._agent_info
+      and self._agent_info.agentCapabilities
+      and self._agent_info.agentCapabilities.sessionCapabilities
+      and self._agent_info.agentCapabilities.sessionCapabilities.list ~= nil
+    or false
+end
+
+---Check if the agent supports session/load
+---@return boolean
+function Connection:can_load_session()
+  return self._agent_info and self._agent_info.agentCapabilities and self._agent_info.agentCapabilities.loadSession
+    or false
+end
+
+---List previous sessions from the agent
+---@param opts? { max_sessions?: number }
+---@return table[] sessions Array of SessionInfo objects
+function Connection:session_list(opts)
+  opts = opts or {}
+  local max_sessions = opts.max_sessions or 500
+
+  if not self:is_ready() then
+    log:error("[acp::session_list] Connection not ready")
+    return {}
+  end
+
+  local all_sessions = {}
+  local cursor = nil
+
+  repeat
+    local params = { cwd = vim.fn.getcwd() }
+    if cursor then
+      params.cursor = cursor
+    end
+
+    local result = self:send_rpc_request(METHODS.SESSION_LIST, params)
+    if not result then
+      break
+    end
+
+    for _, session in ipairs(result.sessions or {}) do
+      table.insert(all_sessions, session)
+      if #all_sessions >= max_sessions then
+        break
+      end
+    end
+
+    cursor = result.nextCursor
+  until not cursor or #all_sessions >= max_sessions
+
+  return all_sessions
+end
+
+---Load an existing session by ID
+---@param session_id string
+---@param opts? { on_session_update?: fun(update: table) }
+---@return boolean success
+function Connection:load_session(session_id, opts)
+  opts = opts or {}
+
+  if not self:is_ready() then
+    log:error("[acp::load_session] Connection not ready")
+    return false
+  end
+
+  self.session_id = session_id
+  self._loading_session = true
+  self._on_session_update = opts.on_session_update
+
+  if not self:_establish_session() then
+    self.session_id = nil
+    self._loading_session = nil
+    self._on_session_update = nil
+    return false
+  end
+
+  self._loading_session = nil
+  self._on_session_update = nil
+
+  self:apply_default_model()
+  self:apply_default_mode()
 
   return true
 end
@@ -297,6 +440,53 @@ function Connection:apply_default_model()
   end
 
   return self:set_model(model_id)
+end
+
+---Apply the default mode from the adapter config
+---@return boolean
+function Connection:apply_default_mode()
+  if not self._modes then
+    return false
+  end
+
+  local default_mode = self.adapter_modified and self.adapter_modified.defaults and self.adapter_modified.defaults.mode
+  if not default_mode then
+    return false
+  end
+
+  -- Support function values for default mode
+  if type(default_mode) == "function" then
+    default_mode = default_mode(self.adapter_modified)
+  end
+
+  if type(default_mode) ~= "string" or default_mode == "" then
+    return false
+  end
+
+  -- Check if the requested mode is available
+  local mode_id = nil
+  for _, mode in ipairs(self._modes.availableModes or {}) do
+    -- Match by id first, then by partial name match (e.g., "plan" matches mode with name containing "plan")
+    if mode.id == default_mode then
+      mode_id = mode.id
+      break
+    elseif mode.name and mode.name:lower():find(default_mode:lower(), 1, true) then
+      mode_id = mode.id
+      break
+    end
+  end
+
+  if not mode_id then
+    log:warn("[acp::apply_default_mode] Mode `%s` not found in available modes", default_mode)
+    return false
+  end
+
+  if mode_id == self._modes.currentModeId then
+    log:debug("[acp::apply_default_mode] Mode `%s` is already selected", mode_id)
+    return true
+  end
+
+  return self:set_mode(mode_id)
 end
 
 ---Create the ACP process
@@ -505,6 +695,10 @@ local DISPATCH = {
       self:handle_available_commands_update(m.params.sessionId, m.params.update.availableCommands)
     elseif m.params.update and m.params.update.sessionUpdate == "current_mode_update" then
       self:handle_current_mode_update(m.params.sessionId, m.params.update.modeId)
+    elseif m.params.update and m.params.update.sessionUpdate == "session_info_update" then
+      self:handle_session_info_update(m.params.sessionId, m.params.update)
+    elseif self._loading_session and self._on_session_update then
+      self._on_session_update(m.params.update)
     elseif self._active_prompt then
       self._active_prompt:handle_session_update(m.params.update)
     end
@@ -674,6 +868,30 @@ function Connection:handle_current_mode_update(session_id, mode_id)
 
   -- Update the current mode
   self._modes.currentModeId = mode_id
+end
+
+---Handle session_info_update notification
+---@param session_id string
+---@param update { sessionUpdate?: string, title?: string, _meta?: table }
+---@return nil
+function Connection:handle_session_info_update(session_id, update)
+  --Ref: https://agentclientprotocol.com/rfds/session-info-update
+  if not session_id or session_id ~= self.session_id then
+    return
+  end
+
+  -- Set the title on the chat buffer
+  if type(update.title) == "string" then
+    local acp_commands = require("codecompanion.interactions.chat.acp.commands")
+    local bufnr = acp_commands.get_buffer_for_session(session_id)
+    if bufnr then
+      local Chat = require("codecompanion.interactions.chat")
+      local chat = Chat.buf_get_chat(bufnr)
+      if chat then
+        chat:set_title(update.title)
+      end
+    end
+  end
 end
 
 ---Handle process exit
